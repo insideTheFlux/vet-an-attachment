@@ -78,6 +78,23 @@ XMP_ELEMENTS = b"""<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http:
 </rdf:Description></rdf:RDF></x:xmpmeta>"""
 
 
+def samsung(blocks, gap=b"") -> bytes:
+    """A trailer laid out the way Samsung phones write one: named blocks, the SEFH directory, its length, SEFT."""
+    body, entries = b"", []
+    for kind, name, value in blocks:
+        block = struct.pack("<HHI", 0, kind, len(name)) + name + value
+        entries.append((kind, len(body), len(block)))
+        body += block
+    body += gap
+    directory = b"SEFH" + struct.pack("<II", 107, len(blocks))
+    for kind, at, length in entries:
+        directory += struct.pack("<HHII", 0, kind, len(body) - at, length)
+    return body + directory + struct.pack("<I", len(directory)) + b"SEFT"
+
+
+UTC_AND_MCC = [(0x0A01, b"Image_UTC_Data", b"1558961988000"), (0x0AA1, b"MCC_Data", b"999")]
+
+
 def make_zip(entries, comment=b"") -> bytes:
     """entries: (name, data) or (name, data, unix mode) tuples."""
     buf = io.BytesIO()
@@ -241,6 +258,33 @@ class Files(unittest.TestCase):
     def test_unknown_bytes_after_the_image_are_suspicious(self):
         a = self.analyse("p.jpg", jpeg(trailing=b"\x01\x02\x03 something else"))
         self.assertEqual(worst(a["findings"]), "SUSPICIOUS")
+
+    def test_a_samsung_trailer_is_only_noted_when_its_blocks_cover_every_byte(self):
+        tail = samsung(UTC_AND_MCC)
+        self.assertEqual(len(tail), 98)
+        a = self.analyse("p.jpg", jpeg(trailing=tail))
+        self.assertEqual(worst(a["findings"]), "SAFE", a["findings"])
+        text = str(a["findings"])
+        self.assertIn("Image_UTC_Data (35 bytes), MCC_Data (19 bytes)", text)
+        self.assertNotIn("1558961988000", text)  # block names only, never their values
+        self.assertNotIn("999", text)
+
+    def test_anything_else_in_a_samsung_like_trailer_is_suspicious(self):
+        cases = {
+            "a gap between the blocks and the directory": samsung(UTC_AND_MCC, gap=b"\x01\x02\x03\x04"),
+            "bytes in front of the blocks": b"\x09" + samsung(UTC_AND_MCC),
+            "a block over 64 KiB": samsung([(0x0A01, b"MotionPhoto_Data", bytes(70_000))]),
+            "a directory length that doesn't fit": samsung(UTC_AND_MCC)[:-8] + struct.pack("<I", 9999) + b"SEFT",
+            "a name that isn't a plain word": samsung([(0x0A01, b"bad name!", b"1")]),
+            "no SEFT": samsung(UTC_AND_MCC)[:-4] + b"XXXX",
+        }
+        for what, tail in cases.items():
+            with self.subTest(what=what):
+                a = self.analyse("p.jpg", jpeg(trailing=tail))
+                self.assertEqual(worst(a["findings"]), "SUSPICIOUS", a["findings"])
+
+    def test_unrecognised_trailing_bytes_are_shown_in_hex_and_text(self):
+        self.assertEqual(vet.dump(b"AB\x00\xffz"), "first 5 bytes: 41 42 00 ff 7a |AB..z|")
 
     def test_a_jpeg_cut_short_is_suspicious(self):
         a = self.analyse("p.jpg", jpeg(cut=True))

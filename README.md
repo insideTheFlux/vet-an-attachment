@@ -87,7 +87,10 @@ big the index says the files are, and a part-written file is deleted.
 - **JPEG structure:** every segment is walked, through every scan, to the end-of-image marker. A segment that claims to
   run past the end of the file, or a missing end, is suspicious. The script then looks at what comes **after** the end
   of the image, the usual place to hide something. Padding or a second JPEG (phones store a preview there) is normal.
-  Anything else is suspicious and named with `file`. The report lists the segments and gives the image size as
+  So is the trailer Samsung phones write there (named blocks, then a directory from `SEFH` to `SEFT`), but only when
+  its blocks and directory account for every byte, once, and no block is over 64 KiB. The report gives the block
+  names and sizes but not what they hold (a timestamp, a country code…). Anything else is suspicious: named with
+  `file`, with its first 128 bytes in hex and as text. The report lists the segments and gives the image size as
   stored.
 - **XMP (sidecar files and XMP embedded in a JPEG):** it must be UTF-8 or UTF-16 text with no control characters. A
   `DOCTYPE` or `ENTITY` is suspicious and the file isn't parsed: XMP never needs one, and it is how XML "billion

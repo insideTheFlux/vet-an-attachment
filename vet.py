@@ -31,6 +31,7 @@ MAX_ENTRIES = 1000
 MAX_URLS = 10
 MAX_PRINT = 30_000  # characters of one XMP regions block printed as written
 MAX_XMP_PARSE = 8 * MIB
+MAX_SAMSUNG_BLOCK = 64 * 1024  # a Samsung trailer block larger than this (a motion photo's video…) is a warning
 
 URL_RE = re.compile(
     r"https://github\.com/(?:user-attachments/files|[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/files)"
@@ -487,12 +488,62 @@ def walk_jpeg(d: bytes, max_segments: int = 10_000) -> dict:
         elif tail.startswith(b"\xff\xd8\xff"):
             f.append(finding("NOTE", f"{len(tail)} bytes after the image start with another JPEG (a camera's or "
                                      "phone's second image)"))
+        elif tail and (blocks := samsung_trailer(tail)) is not None:
+            names = ", ".join(f"{name} ({size} bytes)" for name, size in blocks)
+            big = [name for name, size in blocks if size > MAX_SAMSUNG_BLOCK]
+            if big:
+                f.append(finding("WARN", f"{len(tail)}-byte Samsung phone trailer with blocks over "
+                                         f"{MAX_SAMSUNG_BLOCK} bytes, whose contents aren't checked: {names}"))
+            else:
+                f.append(finding("NOTE", f"{len(tail)}-byte Samsung phone trailer, every byte accounted for: {names}"))
         elif tail:
             f.append(finding("WARN", f"{len(tail)} bytes of something else after the image: "
-                                     f"{file_type_bytes(tail)}; first bytes {tail[:16].hex(' ')}"))
+                                     f"{file_type_bytes(tail)}; {dump(tail)}"))
     if r["sof"] is None:
         f.append(finding("WARN", "no frame header, so no image size"))
     return r
+
+
+def dump(data: bytes, limit: int = 128) -> str:
+    """The first bytes in hex and as text (anything unprintable as a dot)."""
+    head = data[:limit]
+    text = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in head)
+    return f"first {len(head)} bytes: {head.hex(' ')} |{text}|"
+
+
+def samsung_trailer(tail: bytes) -> list[tuple[str, int]] | None:
+    """Samsung phones end a photo with named blocks and a directory of them: "SEFH", a version, a count, then per
+    block (2 bytes, a 2-byte type, how far before "SEFH" it starts, its length), then the directory's length and
+    "SEFT". Each block starts with 2 bytes, a 2-byte type, the length of its name, and the name. Returns the blocks'
+    names and sizes only when the blocks and the directory together cover every byte of `tail`, once."""
+    if len(tail) < 20 or tail[-4:] != b"SEFT":
+        return None
+    (dir_len,) = struct.unpack_from("<I", tail, len(tail) - 8)
+    start = len(tail) - 8 - dir_len
+    if start < 0 or dir_len < 12 or tail[start:start + 4] != b"SEFH":
+        return None
+    (count,) = struct.unpack_from("<I", tail, start + 8)
+    if not 0 < count <= 100 or 12 + 12 * count != dir_len:
+        return None
+    spans = [(start, len(tail))]
+    blocks = []
+    for k in range(count):
+        _pad, _kind, back, length = struct.unpack_from("<HHII", tail, start + 12 + 12 * k)
+        at = start - back
+        if back == 0 or at < 0 or length < 8 or at + length > start:
+            return None
+        (name_len,) = struct.unpack_from("<I", tail, at + 4)
+        name = tail[at + 8:at + 8 + name_len]
+        if not 0 < name_len <= 64 or 8 + name_len > length or not re.fullmatch(rb"[A-Za-z0-9_.-]+", name):
+            return None
+        blocks.append((name.decode("ascii"), length))
+        spans.append((at, at + length))
+    pos = 0
+    for a, z in sorted(spans):
+        if a != pos:  # a gap holding something else, or blocks that overlap
+            return None
+        pos = z
+    return blocks if pos == len(tail) else None
 
 
 def decode_text(raw: bytes) -> tuple[str | None, str | None]:
