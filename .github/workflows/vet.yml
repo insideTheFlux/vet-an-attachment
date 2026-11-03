@@ -1,0 +1,41 @@
+name: vet
+
+# Started by hand: gh workflow run vet.yml -f urls="https://github.com/user-attachments/files/<id>/<name> ..."
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "GitHub attachment links, separated by spaces (at most 10)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  vet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Get this repository's scripts (without keeping a token on disk)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install exiftool and ClamAV
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libimage-exiftool-perl clamav clamav-freshclam file
+          exiftool -ver
+          clamscan --version
+
+      - name: Update ClamAV's virus signatures
+        continue-on-error: true
+        run: |
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam --stdout
+
+      - name: Vet the attachments
+        env:
+          URLS: ${{ inputs.urls }}
+        run: python3 -I vet.py --work "$RUNNER_TEMP/attachment-vet"
