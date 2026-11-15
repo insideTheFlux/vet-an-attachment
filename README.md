@@ -1,5 +1,4 @@
-# attachment-vet
-
+# Vet an attachment.
 Checks files that people attach to GitHub issues and pull requests on a throwaway GitHub machine, before anyone
 downloads them.
 
