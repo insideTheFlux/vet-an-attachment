@@ -19,7 +19,7 @@ ClamAV.
 From any terminal with the GitHub CLI:
 
 ```bash
-gh workflow run vet.yml -R insideTheFlux/attachment-vet \
+gh workflow run vet.yml -R insideTheFlux/vet-an-attachment \
   -f urls="https://github.com/user-attachments/files/123/Example.1.zip https://github.com/user-attachments/files/456/Example.2.zip"
 ```
 
